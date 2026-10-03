@@ -1,0 +1,125 @@
+---
+- name: Qwen 3.5 9B
+  hosts: localhost
+  connection: local
+  become: true
+  vars:
+    model: qwen3.5:9b
+    use_docker: false
+    remove: false
+    remove_data: false
+  tasks:
+    - name: Installer Ollama sur la machine
+      ansible.builtin.shell: curl -fsSL https://ollama.com/install.sh | sh
+      args:
+        creates: /usr/local/bin/ollama
+      when: not remove | bool and not use_docker | bool
+
+    - name: Démarrer Ollama sur la machine
+      ansible.builtin.systemd:
+        name: ollama
+        state: started
+        enabled: true
+      when: not remove | bool and not use_docker | bool
+
+    - name: Télécharger {{ model }} sur la machine
+      ansible.builtin.command: ollama pull {{ model }}
+      register: pulled
+      changed_when: "'success' in pulled.stdout or 'pulling' in pulled.stdout"
+      when: not remove | bool and not use_docker | bool
+
+    - name: Installer Docker
+      ansible.builtin.shell: curl -fsSL https://get.docker.com | sh
+      args:
+        creates: /usr/bin/docker
+      when: not remove | bool and use_docker | bool
+
+    - name: Démarrer Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+      when: not remove | bool and use_docker | bool
+
+    - name: Voir si le conteneur existe
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - -f
+          - "{% raw %}{{.State.Running}}{% endraw %}"
+          - ollama
+      register: ollama_state
+      changed_when: false
+      failed_when: false
+      when: not remove | bool and use_docker | bool
+
+    - name: Créer le conteneur Ollama
+      ansible.builtin.command: >-
+        docker run -d --name ollama --restart unless-stopped
+        -p 11434:11434 -v ollama:/root/.ollama ollama/ollama
+      when: not remove | bool and use_docker | bool and ollama_state.rc != 0
+
+    - name: Démarrer le conteneur Ollama
+      ansible.builtin.command: docker start ollama
+      when: not remove | bool and use_docker | bool and ollama_state.rc == 0 and ollama_state.stdout != "true"
+
+    - name: Télécharger {{ model }} dans le conteneur
+      ansible.builtin.command: docker exec ollama ollama pull {{ model }}
+      register: pulled_container
+      changed_when: "'success' in pulled_container.stdout or 'pulling' in pulled_container.stdout"
+      when: not remove | bool and use_docker | bool
+
+    - name: Arrêter Ollama sur la machine
+      ansible.builtin.command: systemctl disable --now ollama
+      register: stopped_unit
+      changed_when: stopped_unit.rc == 0
+      failed_when: >-
+        stopped_unit.rc != 0 and
+        'does not exist' not in stopped_unit.stderr and
+        'not loaded' not in stopped_unit.stderr
+      when: remove | bool and not use_docker | bool
+
+    - name: Retirer le programme Ollama
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/local/bin/ollama
+        - /etc/systemd/system/ollama.service
+      when: remove | bool and not use_docker | bool
+
+    - name: Recharger systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: remove | bool and not use_docker | bool
+
+    - name: Retirer les modèles
+      ansible.builtin.file:
+        path: /usr/share/ollama
+        state: absent
+      when: remove | bool and remove_data | bool and not use_docker | bool
+
+    - name: Retirer l'utilisateur ollama
+      ansible.builtin.user:
+        name: ollama
+        state: absent
+      when: remove | bool and remove_data | bool and not use_docker | bool
+
+    - name: Retirer le conteneur Ollama
+      ansible.builtin.command: docker rm -f ollama
+      register: removed_container
+      changed_when: removed_container.rc == 0
+      failed_when: >-
+        removed_container.rc != 0 and
+        'No such container' not in removed_container.stderr
+      when: remove | bool and use_docker | bool
+
+    - name: Retirer le volume des modèles
+      ansible.builtin.command: docker volume rm ollama
+      register: removed_volume
+      changed_when: removed_volume.rc == 0
+      failed_when: >-
+        removed_volume.rc != 0 and
+        'No such volume' not in removed_volume.stderr
+      when: remove | bool and remove_data | bool and use_docker | bool
