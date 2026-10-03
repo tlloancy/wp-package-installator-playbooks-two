@@ -62,5 +62,29 @@
         }
       ]
     }
+  
+,
+    {
+      "id": "qwen-3-5-9b",
+      "name": "Qwen 3.5 9B",
+      "category": "AI",
+      "description": "Installe Ollama et télécharge qwen3.5:9b. Docker décoché : sur la machine. Docker coché : dans un conteneur. Le retrait enlève le service. Les modèles partent si on le demande.",
+      "playbook": "playbooks/qwen-3-5-9b/main.yml",
+      "remove": true,
+      "options": [
+        {
+          "key": "model",
+          "label": "Modèle",
+          "type": "text",
+          "default": "qwen3.5:9b"
+        },
+        {
+          "key": "use_docker",
+          "label": "Docker",
+          "type": "boolean",
+          "default": false
+        }
+      ]
+    }
   ]
 }
