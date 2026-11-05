@@ -61,9 +61,7 @@
           "default": 6379
         }
       ]
-    }
-  
-,
+    },
     {
       "id": "qwen-3-5-9b",
       "name": "Qwen 3.5 9B",
@@ -83,6 +81,81 @@
           "label": "Docker",
           "type": "boolean",
           "default": false
+        }
+      ]
+    },
+    {
+      "id": "coturn",
+      "name": "Coturn (relais TURN partagé)",
+      "category": "Communication",
+      "description": "Relais TURN/STUN 4.18 en Docker (réseau host), identifiants éphémères, pairs privés interdits. Debian et Ubuntu.",
+      "playbook": "playbooks/coturn/main.yml",
+      "options": [
+        {
+          "key": "coturn_realm",
+          "label": "Realm, nom DNS du relais (ex. turn.exemple.net)",
+          "type": "text",
+          "default": ""
+        },
+        {
+          "key": "coturn_secrets",
+          "label": "Secrets partagés, un par ligne, 32 caractères minimum chacun",
+          "type": "password",
+          "default": ""
+        },
+        {
+          "key": "coturn_public_ip",
+          "label": "IP d'écoute (vide = adresse de la route par défaut)",
+          "type": "text",
+          "default": ""
+        },
+        {
+          "key": "coturn_external_ip",
+          "label": "IP publique à annoncer si la machine est derrière un NAT (vide = aucune)",
+          "type": "text",
+          "default": ""
+        },
+        {
+          "key": "coturn_min_port",
+          "label": "Port relais min (UDP)",
+          "type": "number",
+          "default": 49160
+        },
+        {
+          "key": "coturn_max_port",
+          "label": "Port relais max (UDP)",
+          "type": "number",
+          "default": 49999
+        },
+        {
+          "key": "coturn_cert_path",
+          "label": "Certificat fullchain.pem au nom du realm (vide = pas de TLS)",
+          "type": "text",
+          "default": ""
+        },
+        {
+          "key": "coturn_key_path",
+          "label": "Clé privée privkey.pem",
+          "type": "text",
+          "default": ""
+        },
+        {
+          "key": "coturn_tcp_3478",
+          "label": "Ouvrir TCP 3478 (repli sans certificat)",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "key": "coturn_manage_ufw",
+          "label": "Configurer UFW",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "coturn_image_tag",
+          "label": "Tag de l'image coturn/coturn",
+          "type": "text",
+          "default": "4.18.0-debian"
         }
       ]
     }
