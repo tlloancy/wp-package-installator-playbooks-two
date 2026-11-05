@@ -1,0 +1,197 @@
+---
+- name: Déployer coturn 4.18 (Docker, réseau host)
+  hosts: all
+  become: true
+  vars:
+    coturn_realm: ""
+    coturn_secrets: ""
+    coturn_public_ip: ""
+    coturn_external_ip: ""
+    coturn_min_port: 49160
+    coturn_max_port: 49999
+    coturn_cert_path: ""
+    coturn_key_path: ""
+    coturn_tcp_3478: false
+    coturn_manage_ufw: true
+    coturn_image_tag: "4.18.0-debian"
+    coturn_conf_dir: /etc/coturn
+    coturn_listen_ip: "{{ coturn_public_ip | default(ansible_default_ipv4.address, true) }}"
+    coturn_tls: "{{ (coturn_cert_path | length > 0) and (coturn_key_path | length > 0) }}"
+    coturn_secret_lines: "{{ coturn_secrets.splitlines() | map('trim') | reject('equalto', '') | list }}"
+    coturn_ufw_rules: >-
+      {{ [{'port': '3478', 'proto': 'udp'},
+          {'port': coturn_min_port ~ ':' ~ coturn_max_port, 'proto': 'udp'}]
+         + ([{'port': '5349', 'proto': 'tcp'}] if coturn_tls | bool else [])
+         + ([{'port': '3478', 'proto': 'tcp'}] if coturn_tcp_3478 | bool else []) }}
+
+  pre_tasks:
+    - name: Vérifier les prérequis
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian"
+          - coturn_realm | length > 0
+          - coturn_listen_ip | length > 0
+          - coturn_min_port | int < coturn_max_port | int
+          - (coturn_cert_path | length > 0) == (coturn_key_path | length > 0)
+          - coturn_secret_lines | length > 0 and (coturn_secret_lines | map('length') | min) >= 32
+        fail_msg: "Debian ou Ubuntu, un realm, une IP d'écoute, des ports cohérents, certificat et clé ensemble, chaque secret fait au moins 32 caractères."
+
+  tasks:
+    - name: Détecter Docker
+      ansible.builtin.command: docker --version
+      register: coturn_docker
+      changed_when: false
+      failed_when: false
+
+    - name: Installer Docker s'il est absent
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        update_cache: true
+      when: coturn_docker.rc != 0
+
+    - name: Installer le module Python Docker
+      ansible.builtin.apt:
+        name: python3-docker
+        state: present
+
+    - name: Lire le conteneur coturn existant
+      community.docker.docker_container_info:
+        name: coturn
+      register: coturn_existing
+      failed_when: false
+
+    - name: Retirer le conteneur s'il n'est pas en réseau host
+      community.docker.docker_container:
+        name: coturn
+        state: absent
+      when:
+        - coturn_existing.exists | default(false)
+        - coturn_existing.container.HostConfig.NetworkMode | default('') != 'host'
+
+    - name: Dossier de configuration lisible par nobody
+      ansible.builtin.file:
+        path: "{{ coturn_conf_dir }}/certs"
+        state: directory
+        owner: nobody
+        group: nogroup
+        mode: "0750"
+
+    - name: Copier certificat et clé
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ coturn_conf_dir }}/certs/{{ item.dest }}"
+        remote_src: true
+        owner: nobody
+        group: nogroup
+        mode: "0640"
+      loop:
+        - { src: "{{ coturn_cert_path }}", dest: fullchain.pem }
+        - { src: "{{ coturn_key_path }}", dest: privkey.pem }
+      when: coturn_tls | bool
+      register: coturn_certs
+
+    - name: Dossier des hooks certbot
+      ansible.builtin.file:
+        path: /etc/letsencrypt/renewal-hooks/deploy
+        state: directory
+        mode: "0755"
+      when: coturn_tls | bool and '/etc/letsencrypt/' in coturn_cert_path
+
+    - name: Hook certbot
+      ansible.builtin.copy:
+        dest: /etc/letsencrypt/renewal-hooks/deploy/coturn.sh
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          install -o nobody -g nogroup -m 0640 "{{ coturn_cert_path }}" {{ coturn_conf_dir }}/certs/fullchain.pem
+          install -o nobody -g nogroup -m 0640 "{{ coturn_key_path }}" {{ coturn_conf_dir }}/certs/privkey.pem
+          docker restart coturn
+      when: coturn_tls | bool and '/etc/letsencrypt/' in coturn_cert_path
+
+    - name: Configuration coturn
+      ansible.builtin.copy:
+        dest: "{{ coturn_conf_dir }}/turnserver.conf"
+        owner: nobody
+        group: nogroup
+        mode: "0640"
+        content: |
+          listening-port=3478
+          listening-ip={{ coturn_listen_ip }}
+          relay-ip={{ coturn_listen_ip }}
+          {% if coturn_external_ip | length > 0 %}
+          external-ip={{ coturn_external_ip }}/{{ coturn_listen_ip }}
+          {% endif %}
+          min-port={{ coturn_min_port }}
+          max-port={{ coturn_max_port }}
+          realm={{ coturn_realm }}
+          server-name={{ coturn_realm }}
+          fingerprint
+          use-auth-secret
+          {% for s in coturn_secret_lines %}
+          static-auth-secret={{ s }}
+          {% endfor %}
+          {% if coturn_tls | bool %}
+          tls-listening-port=5349
+          cert=/etc/coturn/certs/fullchain.pem
+          pkey=/etc/coturn/certs/privkey.pem
+          no-tlsv1
+          no-tlsv1_1
+          {% endif %}
+          no-multicast-peers
+          no-software-attribute
+          denied-peer-ip=0.0.0.0-0.255.255.255
+          denied-peer-ip=10.0.0.0-10.255.255.255
+          denied-peer-ip=100.64.0.0-100.127.255.255
+          denied-peer-ip=127.0.0.0-127.255.255.255
+          denied-peer-ip=169.254.0.0-169.254.255.255
+          denied-peer-ip=172.16.0.0-172.31.255.255
+          denied-peer-ip=192.0.0.0-192.0.0.255
+          denied-peer-ip=192.0.2.0-192.0.2.255
+          denied-peer-ip=192.168.0.0-192.168.255.255
+          denied-peer-ip=198.18.0.0-198.19.255.255
+          denied-peer-ip=198.51.100.0-198.51.100.255
+          denied-peer-ip=203.0.113.0-203.0.113.255
+          denied-peer-ip=240.0.0.0-255.255.255.255
+          denied-peer-ip=::1
+          denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+          denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+          user-quota=12
+          total-quota=1200
+      no_log: true
+      register: coturn_conf
+
+    - name: Lancer coturn
+      community.docker.docker_container:
+        name: coturn
+        image: "coturn/coturn:{{ coturn_image_tag }}"
+        network_mode: host
+        restart_policy: unless-stopped
+        restart: "{{ coturn_conf.changed or (coturn_certs.changed | default(false)) }}"
+        volumes:
+          - "{{ coturn_conf_dir }}/turnserver.conf:/etc/coturn/turnserver.conf:ro"
+          - "{{ coturn_conf_dir }}/certs:/etc/coturn/certs:ro"
+        command:
+          - "-c"
+          - "/etc/coturn/turnserver.conf"
+          - "--log-file=stdout"
+        log_driver: json-file
+        log_options:
+          max-size: 10m
+          max-file: "3"
+        state: started
+
+    - name: Règles UFW
+      community.general.ufw:
+        rule: allow
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
+      loop: "{{ coturn_ufw_rules }}"
+      when: coturn_manage_ufw | bool
+
+    - name: Vérifier que coturn écoute
+      ansible.builtin.wait_for:
+        host: "{{ coturn_listen_ip }}"
+        port: "{{ item }}"
+        timeout: 30
+      loop: "{{ [3478] + ([5349] if coturn_tls | bool else []) }}"
